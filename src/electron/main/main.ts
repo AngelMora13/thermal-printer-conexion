@@ -1,7 +1,7 @@
 import { join } from 'path';
 import {
     app,
-    BrowserWindow
+    BrowserWindow,
 } from 'electron';
 
 const isDev = true

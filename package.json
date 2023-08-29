@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "express": "^4.18.2",
+    "usb": "^2.10.0",
     "vue": "^3.3.4"
   },
   "devDependencies": {
