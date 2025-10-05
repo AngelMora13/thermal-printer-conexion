@@ -53,6 +53,7 @@
     "@3ksy/electron-pos-printer": "^1.4.9",
     "express": "^4.18.2",
     "node-thermal-printer": "^4.2.1",
+    "serialport": "^13.0.0",
     "usb": "^2.10.0",
     "vue": "^3.3.4"
   },
