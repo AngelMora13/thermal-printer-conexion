@@ -189,3 +189,16 @@ appExpress.post('/imprimirPDF', async (req, res) => {
     res.status(500).send('Error general: ' + err.message);
   }
 });
+
+appExpress.get('/listarPuertosCom', async (req, res) => {
+    try {
+        const ports = await SerialPort.list(); // Aquí está la clave
+        res.json(ports.map(p => ({ 
+            path: p.path, // Esto será 'COM1', 'COM3', etc.
+            manufacturer: p.manufacturer || 'Desconocido',
+            p
+        })));
+    } catch (err: any) {
+        res.status(500).send('Error al listar puertos: ' + err.message);
+    }
+});
