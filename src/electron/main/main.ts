@@ -94,7 +94,6 @@ const port = new SerialPort({
 });
 function enviarComando(comando: any) {
   return new Promise((resolve, reject) => {
-    console.log(port)
     port.write(comando, (err) => {
       if (err) reject(err);
       else resolve('Comando enviado correctamente');
