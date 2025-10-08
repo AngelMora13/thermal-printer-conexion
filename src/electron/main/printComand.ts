@@ -23,12 +23,12 @@ const CMD = {
 // NOTA: La instancia debe ser única y global para que el listener funcione correctamente.
 const port = new SerialPort({
     path: PUERTO_SERIAL,
-    baudRate: BAUD_RATE,
+    baudRate: BAUD_RATE, // Corregido: Usar BAUD_RATE
     // La impresora PnP normalmente usa: 8 data bits, 1 stop bit, no parity (default)
 });
 
 // Variables de estado fiscal
-let secuencia = 0x20; // Número de secuencia inicial.
+let secuencia = 0x00; // Número de secuencia inicial (más seguro al empezar).
 
 // --- 2. DATOS DE LA FACTURA (EJEMPLO) ---
 const FACTURA_DATA = {
@@ -40,6 +40,11 @@ const FACTURA_DATA = {
     pago: {
         tipo: 'Efectivo', 
         monto: 15.75, 
+    },
+    // NUEVO: Información del cliente genérico para Consumidor Final
+    cliente: {
+        rif: 'V251888147', // RIF/CUIT genérico (se puede cambiar si es un cliente real)
+        nombre: 'CONSUMIDOR FINAL',
     }
 };
 
@@ -56,18 +61,13 @@ const FACTURA_DATA = {
 function formatearValor(valor: any, longitud_total: number, longitud_decimal: number) {
     const factor = Math.pow(10, longitud_decimal);
     // 1. Redondear y multiplicar para obtener el entero que incluye decimales.
-    // Ejemplo: 5.50 * 100 = 550
     const valor_entero = Math.round(valor * factor);
 
     // 2. Convertir a string
     let str_valor = valor_entero.toString();
     
     // 3. Rellenar con ceros a la izquierda hasta la longitud total requerida.
-    // Ej: "550" a "0000000550" (10 dígitos en total si longitud_total es 12/2)
-    return str_valor.padStart(longitud_total - (longitud_total > 10 ? 0 : 2), '0'); 
-    // Usamos longitud_total - (longitud_total > 10 ? 0 : 2) para simplificar el padding en JS.
-    // El precio (12/2) requiere 10 dígitos. La cantidad (13/3) requiere 10 dígitos.
-    // Simplificamos:
+    // Usamos str_valor.padStart(longitud_total - longitud_decimal, '0') que es la forma correcta.
     return str_valor.padStart(longitud_total - longitud_decimal, '0');
 }
 
@@ -85,13 +85,17 @@ function calcularBCC(data: any) {
 
 
 /**
- * Construye, envía el comando binario completo y ESPERA el ACK de la impresora.
- * Esta es la parte CRÍTICA para la sincronización.
+ * Construye, envía el comando binario completo y ESPERA el ACK/NAK de la impresora.
+ * Modificado para manejar respuestas fragmentadas y errores de múltiples bytes.
  * @param {Buffer} trama_interna - El Buffer que contiene Sec, Comando, Campos de datos y ETX.
  * @returns {Promise<string>} - Promesa que se resuelve solo al recibir ACK (0x06).
  */
+/*
 function enviarComandoBinario(trama_interna: any): Promise<string> {
     return new Promise((resolve, reject) => {
+        // Búfer para acumular los fragmentos de la respuesta
+        let currentResponse: any = Buffer.alloc(0);
+
         // 1. Calcular BCC
         const bcc = calcularBCC(trama_interna);
 
@@ -104,34 +108,93 @@ function enviarComandoBinario(trama_interna: any): Promise<string> {
 
         // 3. Listener Temporal para la Respuesta
         const responseListener = (data: Buffer) => {
-          console.log({data})
-            if (data[0] === CMD.ACK) {
-                // Comando Aceptado: Limpiar listener y resolver la promesa
+            // console.log({data}); // Mantener el log de fragmentos si es útil
+
+            // Acumular el fragmento
+            currentResponse = Buffer.concat([currentResponse, data]);
+
+            // --- 3.1 Chequeo de Respuesta Simple (ACK/NAK) ---
+            // Las respuestas ACK/NAK suelen ser bytes individuales, pero las buscamos en cualquier parte del buffer.
+            if (currentResponse.includes(CMD.ACK)) {
+                // Comando Aceptado
                 port.off('data', responseListener);
                 console.log(`<- [CMD ${comandoHex}] Recibido ACK (0x06). Listo para siguiente comando.`);
                 resolve('Comando enviado y ACK recibido.');
-            } else if (data[0] === CMD.NAK) {
-                // Comando Rechazado: Limpiar listener y rechazar la promesa
+                return;
+            }
+            
+            if (currentResponse.includes(CMD.NAK)) {
+                // Comando Rechazado
                 port.off('data', responseListener);
                 const errorMessage = `<- [CMD ${comandoHex}] Recibido NAK (0x15). Comando rechazado. Verifique Secuencia/BCC/Formato.`;
                 console.error(`❌ ${errorMessage}`);
                 reject(new Error(errorMessage));
+                return;
             }
-            // Ignorar otros datos si es necesario
+            
+            // --- 3.2 Chequeo de Respuesta Compleja (Status o ERROR) ---
+            // Buscamos la secuencia ASCII "ERROR" o el fin de una trama de estado (ETX, 0x03).
+            
+            const errorIndex = currentResponse.indexOf('ERROR');
+            const etxIndex = currentResponse.indexOf(CMD.ETX); // 0x03
+
+            if (errorIndex !== -1 || etxIndex !== -1) {
+                // Si encontramos "ERROR" o el fin de la trama (ETX), asumimos que la impresora 
+                // envió un mensaje de estado/error que interrumpe la secuencia.
+                port.off('data', responseListener);
+                
+                // Intentar decodificar el mensaje para el usuario
+                let responseText = currentResponse.toString('ascii').trim();
+                
+                // Limpiar eco si existe (empieza con STX)
+                if (currentResponse[0] === CMD.STX && responseText.length > 1) {
+                    responseText = responseText.substring(2);
+                }
+
+                // Generar un error claro
+                console.error(`❌ [CMD ${comandoHex}] RESPUESTA INESPERADA (Error Fiscal):`, responseText);
+                reject(new Error(`Respuesta Fiscal: ${responseText}. La secuencia se detiene.`));
+                return;
+            }
+            // Si no se encontró ni ACK, ni NAK, ni ERROR, ni ETX, se sigue esperando más datos.
         };
 
         // 4. Adjuntar el listener
         port.on('data', responseListener);
 
         // 5. Enviar la trama binaria
-        console.log('entrando')
         port.write(trama_completa, (err) => {
-          console.log('enviando', err)
             if (err) {
                 port.off('data', responseListener); // Limpiar en caso de error de escritura
                 reject(new Error(`Error al escribir en el puerto serial: ${err.message}`));
             }
-            // NOTA: No resolvemos aquí. La promesa se resuelve solo al recibir ACK en el listener.
+            // NOTA: La promesa se resuelve solo al recibir ACK/NAK en el listener.
+        });
+    });
+} */
+function enviarComandoBinario(trama_datos: any) {
+    return new Promise((resolve, reject) => {
+        // 1. Calcular BCC sobre los bytes desde Sec hasta ETX
+        const bcc = calcularBCC(trama_datos);
+
+        // 2. Ensamblar la trama completa: STX + Trama + BCC
+        const STX = Buffer.from([0x02]);
+        const trama_completa = Buffer.concat([STX, trama_datos, bcc]);
+        
+        console.log(`\n--- ENVIANDO COMANDO ---`);
+        console.log(`Buffer completo (Hex): ${trama_completa.toString('hex')}`);
+        console.log(`Buffer de datos: ${trama_datos.toString('hex')}`);
+        console.log(`BCC Calculado (Hex): ${bcc.toString('hex')}`);
+
+        port.write(trama_completa, (err) => {
+            if (err) {
+                console.error(`Error al escribir en el puerto serial: ${err.message}`);
+                reject(err);
+            } else {
+              setTimeout(() => {
+                resolve('Comando binario enviado correctamente.');
+              }, 2000);
+            }
         });
     });
 }
@@ -142,7 +205,8 @@ function enviarComandoBinario(trama_interna: any): Promise<string> {
  * Ejecuta la secuencia completa de facturación fiscal.
  * @param {object} data - Datos de la factura.
  */
-async function generarFacturaFiscal(data: any = FACTURA_DATA) {
+async function generarFacturaFiscal() {
+  const data = FACTURA_DATA
     return new Promise(async (resolve, reject) => {
         
         // La instancia del puerto serial debe estar abierta antes de usarla
@@ -158,12 +222,30 @@ async function generarFacturaFiscal(data: any = FACTURA_DATA) {
         try {
             
             // ===============================================
-            // 1. COMANDO: Abrir Documento Venta (0x40)
+            // 1. COMANDO: Abrir Documento Venta (0x40) - CORREGIDO
             // ===============================================
-            console.log('1. Abriendo factura (0x40)...');
+            // Ahora incluimos los campos de RIF/CUIT y Nombre/Razón Social.
+            
+            console.log('1. Abriendo factura (0x40) con tipo F y datos de cliente...');
+            
+            const cliente = data.cliente;
+            
+            // Campos: F | SEP | RIF del cliente | SEP | Nombre del cliente | SEP | ... (otros campos opcionales vacíos)
+            const campos_string = String.fromCharCode(CMD.SEP) + 
+                                  cliente.rif + String.fromCharCode(CMD.SEP)
+                                  //cliente.nombre+ String.fromCharCode(CMD.SEP) 
+            const campos_string2 = String.fromCharCode(CMD.SEP) + cliente.nombre + String.fromCharCode(CMD.SEP) 
+            
+            const campos_abrir = Buffer.from(campos_string, 'hex');
+            const campos_abrir2 = Buffer.from(campos_string2, 'hex');
+            
             let cmd_abrir = Buffer.from([
                 secuencia++,         // Sec
                 CMD.ABRIR_FACTURA,   // Comando 0x40
+                CMD.SEP,
+                ...campos_abrir, 
+                ...campos_abrir2,     // Campo de datos: 'F' + 0x1C + RIF + 0x1C + Nombre
+                CMD.SEP,
                 CMD.ETX              // ETX
             ]);
             await enviarComandoBinario(cmd_abrir); // Espera ACK antes de continuar
@@ -176,20 +258,28 @@ async function generarFacturaFiscal(data: any = FACTURA_DATA) {
             for (const item of data.productos) {
                 console.log(`2. Imprimiendo renglón: ${item.nombre}`);
             
-                // Formato de los campos: Cantidad(13/3)|Precio(12/2)|IVA(4/2)|Nombre
+                // La documentación indica el orden: Descripción | Cantidad | Monto | Tasa | Calificador | (3x Vacío)
                 const campos = [
-                    // 1. Cantidad (13 dígitos total, 3 decimales)
+                    // Campo 1: Descripción (Nombre del producto, hasta 20 caracteres)
+                    item.nombre, 
+
+                    // Campo 2: Cantidad (13 dígitos total, 3 decimales, formato nnnn.nnn)
                     formatearValor(item.cantidad, 13, 3), 
                     
-                    // 2. Precio Unitario (12 dígitos total, 2 decimales)
+                    // Campo 3: Monto del ítem / Precio Unitario (12 dígitos total, 2 decimales, formato nnnnnn.nn)
+                    // Nota: Se asume Monto Unitario, si es Total, el formateo sigue siendo 12/2
                     formatearValor(item.precioUnitario, 12, 2), 
                     
-                    // 3. % IVA (4 dígitos total, 2 decimales, ej: "1600")
+                    // Campo 4: Tasa imponible (4 dígitos total, 2 decimales, formato .nnnn, ej: "1600" para 16%)
                     item.iva.toFixed(2).replace('.', '').padStart(4, '0'), 
+
+                    // Campo 5: Calificador de ítem de línea ('M' = Monto agregado mercadería)
+                    'M', 
                     
-                    // 4. Nombre/Descripción del producto
-                    item.nombre 
-                    
+                    // Campo 6, 7, 8: Campos no utilizados (se usan strings vacíos para incluir los separadores 0x1C)
+                    '', 
+                    '', 
+                    '' 
                 ].join(String.fromCharCode(CMD.SEP)); 
 
                 let cmd_renglon = Buffer.from([

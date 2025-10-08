@@ -314,7 +314,7 @@ appExpress.post('/impresionPNP', (req, res) => {
 
     // Llama a tu función de manejo serial.
     // La función debe ser modificada para aceptar facturaData y retornar una Promesa.
-    generarFacturaFiscal(facturaData)
+    generarFacturaFiscal()
         .then(resultado => {
             // Envía la respuesta al cliente Electron
             res.status(200).send({ 
