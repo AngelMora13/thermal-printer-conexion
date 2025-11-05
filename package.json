@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@3ksy/electron-pos-printer": "^1.4.9",
+    "@serialport/parser-readline": "^13.0.0",
     "express": "^4.18.2",
     "node-thermal-printer": "^4.2.1",
     "serialport": "^13.0.0",

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import HelloWorld from './components/HelloWorld.vue'
-const comPorts = ref([]); // Variable reactiva para guardar la lista
+const comPorts = ref<any>([]); // Variable reactiva para guardar la lista
 const selectedComPort = ref(''); // Variable reactiva para la selección del usuario
 // --- Variables para PNP Fiscal (NUEVAS) ---
 const pnpComPorts = ref<any[]>([]); 
@@ -64,7 +64,7 @@ const getPrinters = async () => {
     console.error('Error fetching printers:', error);
   }
 };
-const impresion = async (path) => {
+const impresion = async (path: string) => {
   try {
     const response = await fetch('http://localhost:8080' + path, { method: 'POST' });
     const result = await response.text();

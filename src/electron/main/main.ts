@@ -7,7 +7,7 @@ import {
 import express from 'express'
 import {PosPrinter, PosPrintData, PosPrintOptions} from '@3ksy/electron-pos-printer'
 import {SerialPort} from 'serialport'
-import { FiscalPNPService, FacturaData } from './fiscal-pnp-gemini';
+import { generarFacturaFiscal } from './printComand';import { FiscalPNPService, FacturaData } from './fiscal-pnp-gemini';
 
 ipcMain.handle('obtener-impresoras', async () => {
   const win = BrowserWindow.getAllWindows()[0];
@@ -95,15 +95,17 @@ const port = new SerialPort({
   path: 'COM3', // Cambia esto según el puerto detectado
   baudRate: 9600,
 });
+
 function enviarComando(comando: any) {
   return new Promise((resolve, reject) => {
-    console.log(port)
     port.write(comando, (err) => {
+      console.log({comando})
       if (err) reject(err);
       else resolve('Comando enviado correctamente');
     });
   });
 }
+
 appExpress.get('/listarImpresoras', async (req, res) => {
   try {
     const win = BrowserWindow.getAllWindows()[0];
@@ -114,23 +116,26 @@ appExpress.get('/listarImpresoras', async (req, res) => {
     res.status(500).send('Error al obtener impresoras: ' + err.message);
   }
 });
+
 // 🖨 /impresionPNP - Comandos binarios estilo PNP
-appExpress.post('/impresionPNP', async (req, res) => {
+/*appExpress.post('/impresionPNP', async (req, res) => {
   try {
     const comando = Buffer.from([
-      0x02, // STX
+      0x20, // STX
       0x45, // Comando de impresión de línea
       0x01, // Subcomando
       ...Buffer.from('Texto de prueba PNP'), // Texto
       0x0D, // Carriage return
       0x03  // ETX
     ]);
+    console.log('entrando')
     const resultado = await enviarComando(comando);
+    console.log({resultado})
     res.send(resultado);
   } catch (err: any) {
     res.status(500).send('Error PNP: ' + err.message);
   }
-});
+});*/
 
 // 🖨 /impresionHKA - Comandos ASCII estilo TFHKA
 appExpress.post('/impresionHKA', async (req, res) => {
@@ -164,6 +169,7 @@ appExpress.post('/impresionEpson', async (req, res) => {
     res.status(500).send('Error Epson: ' + err.message);
   }
 });
+
 appExpress.post('/imprimirPDF', async (req, res) => {
   try {
     const win = BrowserWindow.getAllWindows()[0];
