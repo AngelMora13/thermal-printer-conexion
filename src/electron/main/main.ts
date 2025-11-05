@@ -7,11 +7,14 @@ import {
 import express from 'express'
 import {PosPrinter, PosPrintData, PosPrintOptions} from '@3ksy/electron-pos-printer'
 import {SerialPort} from 'serialport'
+import { FiscalPNPService, FacturaData } from './fiscal-pnp-gemini';
 
 ipcMain.handle('obtener-impresoras', async () => {
   const win = BrowserWindow.getAllWindows()[0];
   return await win.webContents.getPrintersAsync()
 });
+// Instancia global del servicio PNP
+const fiscalPNPService = new FiscalPNPService();
 
 const options: PosPrintOptions = {
     preview: false, // Preview in window or print
@@ -200,5 +203,61 @@ appExpress.get('/listarPuertosCom', async (req, res) => {
         })));
     } catch (err: any) {
         res.status(500).send('Error al listar puertos: ' + err.message);
+    }
+});
+/////////////////////////////////////
+// --- Nuevas funciones para el servicio PNP ---
+
+// 1. Endpoint para listar puertos COM (PNP)
+appExpress.get('/pnp/listarPuertos', async (req, res) => {
+    try {
+        const ports = await fiscalPNPService.listPorts();
+        res.json(ports);
+    } catch (err: any) {
+        console.error('Error listando puertos PNP:', err);
+        res.status(500).send('Error listando puertos: ' + err.message);
+    }
+});
+
+// 2. Endpoint para seleccionar/configurar puerto COM (PNP)
+appExpress.post('/pnp/seleccionarPuerto', async (req, res) => {
+    const { path } = req.body;
+    if (!path) {
+        return res.status(400).send('Se requiere la ruta del puerto COM.');
+    }
+    try {
+        const result = await fiscalPNPService.openPort(path);
+        res.send(result);
+    } catch (err: any) {
+        console.error('Error al configurar puerto PNP:', err);
+        res.status(500).send(err.message);
+    }
+});
+
+// 3. Endpoint para impresión de prueba (PNP)
+appExpress.post('/pnp/impresionPrueba', async (req, res) => {
+    try {
+        const result = await fiscalPNPService.testPrint();
+        res.send(result);
+    } catch (err: any) {
+        console.error('Error en impresión de prueba PNP:', err);
+        res.status(500).send('Error en la impresión de prueba: ' + err.message);
+    }
+});
+
+// 4. Endpoint para impresión de factura completa (PNP)
+appExpress.post('/pnp/imprimirFactura', async (req, res) => {
+    const facturaData: FacturaData = req.body;
+    
+    if (!facturaData || !facturaData.productos || facturaData.productos.length === 0) {
+        return res.status(400).send('Datos de factura incompletos o sin productos.');
+    }
+
+    try {
+        const result = await fiscalPNPService.printFactura(facturaData);
+        res.send(result);
+    } catch (err: any) {
+        console.error('Error al imprimir factura PNP:', err);
+        res.status(500).send('Error al imprimir factura: ' + err.message);
     }
 });
