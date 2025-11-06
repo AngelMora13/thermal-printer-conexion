@@ -7,6 +7,8 @@ import {
 import express from 'express'
 import {PosPrinter, PosPrintData, PosPrintOptions} from '@3ksy/electron-pos-printer'
 import {SerialPort} from 'serialport'
+import { imprimirFacturaFiscal as printGem } from './printGeminisPro'
+import { imprimirFacturaFiscal as printGem2 } from './printGeminiPro2'
 import { generarFacturaFiscal } from './printComand';import { FiscalPNPService, FacturaData } from './fiscal-pnp-gemini';
 
 ipcMain.handle('obtener-impresoras', async () => {
@@ -261,6 +263,38 @@ appExpress.post('/pnp/imprimirFactura', async (req, res) => {
 
     try {
         const result = await fiscalPNPService.printFactura(facturaData);
+        res.send(result);
+    } catch (err: any) {
+        console.error('Error al imprimir factura PNP:', err);
+        res.status(500).send('Error al imprimir factura: ' + err.message);
+    }
+});
+// 4. Endpoint para impresión de factura completa (PNP)
+appExpress.post('/pnp/imprimirFacturaGem', async (req, res) => {
+    const facturaData: FacturaData = req.body;
+    
+    if (!facturaData || !facturaData.productos || facturaData.productos.length === 0) {
+        return res.status(400).send('Datos de factura incompletos o sin productos.');
+    }
+
+    try {
+        const result = await printGem()
+        res.send(result);
+    } catch (err: any) {
+        console.error('Error al imprimir factura PNP:', err);
+        res.status(500).send('Error al imprimir factura: ' + err.message);
+    }
+});
+// 4. Endpoint para impresión de factura completa (PNP)
+appExpress.post('/pnp/imprimirFacturaGem2', async (req, res) => {
+    const facturaData: FacturaData = req.body;
+    
+    if (!facturaData || !facturaData.productos || facturaData.productos.length === 0) {
+        return res.status(400).send('Datos de factura incompletos o sin productos.');
+    }
+
+    try {
+        const result = await printGem2()
         res.send(result);
     } catch (err: any) {
         console.error('Error al imprimir factura PNP:', err);

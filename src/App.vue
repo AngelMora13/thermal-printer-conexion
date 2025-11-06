@@ -170,7 +170,7 @@ const doPrintFacturaPnp = async () => {
 };
 /**************************************************************** */
 /***************************** */
-const puertosCustom = ref([]);
+const puertosCustom: any = ref([]);
 const puertoSeleccionadoCustom = ref('');
 
 const listarPuertosCustom = async () => {
@@ -206,6 +206,44 @@ const imprimirFacturaCustom = async () => {
     ]
   };
   const res = await fetch('http://localhost:8080/custom/imprimirFactura', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(factura)
+  });
+  alert(await res.text());
+};
+const imprimirFacturaGem = async () => {
+  const factura = {
+    cliente: {
+      razonSocial: 'Juan Pérez C.A.',
+      rif: 'J-12345678-9',
+      direccion: 'Av. Principal, Caracas'
+    },
+    productos: [
+      { descripcion: 'Producto A', precio: '100.00', cantidad: '2', iva: '16' },
+      { descripcion: 'Producto B', precio: '50.00', cantidad: '1', iva: '8' }
+    ]
+  };
+  const res = await fetch('http://localhost:8080/pnp/imprimirFacturaGem', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(factura)
+  });
+  alert(await res.text());
+};
+const imprimirFacturaGem2 = async () => {
+  const factura = {
+    cliente: {
+      razonSocial: 'Juan Pérez C.A.',
+      rif: 'J-12345678-9',
+      direccion: 'Av. Principal, Caracas'
+    },
+    productos: [
+      { descripcion: 'Producto A', precio: '100.00', cantidad: '2', iva: '16' },
+      { descripcion: 'Producto B', precio: '50.00', cantidad: '1', iva: '8' }
+    ]
+  };
+  const res = await fetch('http://localhost:8080/pnp/imprimirFacturaGem2', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(factura)
@@ -293,6 +331,11 @@ const imprimirFacturaCustom = async () => {
 <button @click="configurarPuertoCustom">Configurar Puerto</button>
 <button @click="impresionPruebaCustom">Impresión de Prueba</button>
 <button @click="imprimirFacturaCustom">Imprimir Factura</button>
+<div>
+  <h2>🧾 Funciones Fiscales PNP GEMINI</h2>
+  <button @click="imprimirFacturaGem">Imprimir Factura GEMINI PRO</button>
+  <button @click="imprimirFacturaGem2">Imprimir Factura GEMINI PRO 2</button>
+</div>
 
 </template>
 
