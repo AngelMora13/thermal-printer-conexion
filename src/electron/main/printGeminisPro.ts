@@ -14,7 +14,7 @@ interface DatosCliente {
 }
 
 // Configuración de la comunicación serial
-const COM_PORT = 'COM3'; // Reemplazar con el puerto serial real
+const COM_PORT = 'COM4'; // Reemplazar con el puerto serial real
 const BAUD_RATE = 9600; // Velocidad de comunicación [cite: 259, 1231]
 const SEPARADOR_CAMPO = '\x1C'; // $0\times 1C$
 const STX = '\x02'; // Inicio de texto $0\times 02$ [cite: 268]
@@ -107,6 +107,67 @@ function verificarError(respuesta: string): boolean {
     }
     return false;
 }
+/**
+ * Envía la secuencia de caracteres de control para forzar un RESET (reinicio por software) 
+ * del controlador fiscal. Esto cancela cualquier documento fiscal abierto.
+ * @param port El puerto serial abierto.
+ * @returns Una promesa que resuelve cuando la secuencia es enviada.
+ */
+function forzarReset(port: any): Promise<void> {
+    console.warn('\n⚠️ Forzando RESET del controlador fiscal (secuencia de caracteres de control)...');
+    
+    // La secuencia de reset es $0\times 07$ a $0\times 17$ (decimal 7 a 23) 
+    const RESET_SEQUENCE = Buffer.from([
+        0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 
+        0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17
+    ]);
+
+    return new Promise((resolve, reject) => {
+        // No es necesario STX, ETX o BCC para esta secuencia[cite: 326].
+        port.write(RESET_SEQUENCE, (err: Error) => {
+            if (err) {
+                console.error('❌ Error al enviar la secuencia de RESET:', err.message);
+                reject(err);
+            } else {
+                console.log('✅ Secuencia de RESET enviada. Espere unos segundos a que la impresora se reinicie.');
+                // Espera para permitir que la impresora se reinicie y se libere.
+                setTimeout(resolve, 3000); 
+            }
+        });
+    });
+}
+/**
+ * Intenta enviar el comando para cerrar/abortar la factura fiscal pendiente (0x45).
+ * Esto es crucial si la impresión falló después de abrir el documento (0x40) y antes de cerrarlo (0x45).
+ * @param port El puerto serial abierto.
+ */
+async function abortarDocumentoPendiente(port: any): Promise<void> {
+    console.warn('\n⚠️ Intentando ABORTAR/CERRAR el documento fiscal pendiente (0x45) debido a un error...');
+    
+    // Comando 0x45: Cerrar Factura Fiscal
+    const camposCerrar: string[] = [
+        'T', // Calificador 'T' (Terminate/Cerrar). Usamos el cierre normal para liberar la impresora.
+        '0.00' // Monto del pago en Divisa
+    ];
+    const comandoCerrar = construirComando('45', camposCerrar);
+
+    try {
+        // Enviar el comando de cierre y esperar la respuesta.
+        const respuestaAborto = await enviarComando(port, comandoCerrar);
+        
+        // No verificamos error con verificarError() intencionalmente. Si falla el cierre/aborto, 
+        // simplemente registramos el error de la impresora, pero no lanzamos una nueva excepción.
+        if (respuestaAborto.includes('ERROR')) {
+            console.error('❌ La impresora no pudo cerrar/abortar el documento pendiente. Revisar estado fiscal.');
+        } else {
+            console.log('✅ Documento fiscal pendiente cerrado/abortado con éxito.');
+        }
+    } catch (error) {
+        // Capturar errores de comunicación durante el aborto
+        console.error('❌ Error de comunicación al intentar cerrar/abortar la factura:', error);
+        await forzarReset(port);
+    }
+}
 
 /**
  * Función principal para imprimir una Factura Fiscal.
@@ -114,7 +175,6 @@ function verificarError(respuesta: string): boolean {
  */
 async function imprimirFacturaFiscal(): Promise<boolean> {
     console.log('Iniciando proceso de impresión de factura fiscal...');
-
     //verificar si es SerialPort.SerialPort o new SerialPort('COM3', { baudRate: 9600 });
     const port = new SerialPort.SerialPort({
         path: COM_PORT,
@@ -210,44 +270,82 @@ async function imprimirFacturaFiscal(): Promise<boolean> {
  */
 function enviarComando(port: any, comando: string): Promise<string> {
     return new Promise((resolve, reject) => {
-        // Establecer un timeout para la respuesta del comando
-        const timeout = setTimeout(() => {
-            // Un timeout sugiere error de comunicación [cite: 298]
-            reject(new Error(`Timeout de respuesta para el comando: ${comando.slice(0, 10)}...`));
-        }, 5000); // 5 segundos de espera (ajustar si es necesario)
+        const TIMEOUT_MS = 10000; // 10 segundos
+        let timeout: NodeJS.Timeout;
 
         const respuestaChunks: string[] = [];
         const onData = (data: Buffer) => {
-            const dataString = data.toString('latin1'); // Leer como bytes brutos
-            respuestaChunks.push(dataString);
+            const dataString = data.toString('latin1');
+            console.log({dataString}); // Para depuración
 
-            // Una respuesta válida siempre comienza con STX ($0\times 02$) y termina con ETX ($0\times 03$) y BCC (4 bytes)
-            if (dataString.endsWith(ETX) && dataString.length >= 7) { 
+            // 1. Manejo del código de continuación (Equipo Procesando)
+            if (dataString.includes('\x12')) {
+                // Si se recibe $0\times 12$, la impresora indica que sigue procesando[cite: 289, 290].
+                // Se debe reiniciar el temporizador (o extender el tiempo máximo)[cite: 297].
                 clearTimeout(timeout);
-                port.off('data', onData); // Eliminar listener para esta respuesta
-                const respuestaCompleta = respuestaChunks.join('');
+                timeout = setTimeout(() => {
+                    port.off('data', onData);
+                    // Si se excede el tiempo de espera (incluso después del 0x12), declarar error de comunicación[cite: 298].
+                    reject(new Error(`Timeout de respuesta (fallo de comunicación) para el comando: ${comando.slice(0, 10)}...`));
+                }, TIMEOUT_MS);
                 
-                // Opcional: Validar BCC de la respuesta.
-                // Sin embargo, por simplicidad y siguiendo el enfoque del manual que se centra en el string 'ERROR', 
-                // nos enfocaremos en la verificación de error principal.
-                // Nota: Los comandos con tiempo extendido envían $0\times 12$ antes de la respuesta final[cite: 289, 290].
-                // Esta implementación simple no maneja el código de continuación, lo cual debe ser ajustado
-                // si se usan comandos de tiempo extendido (como Reportes de Memoria)[cite: 289].
+                // Ignorar el $0\times 12$ en la acumulación de la trama de respuesta.
+                return;
+            }
 
-                resolve(respuestaCompleta);
+            // 2. Acumulación de Chunks
+            respuestaChunks.push(dataString);
+            const respuestaCompleta = respuestaChunks.join('');
+            console.log({dataString, respuestaChunks})
+            // La respuesta final siempre es: STX + ... + ETX (1 byte) + BCC (4 bytes).
+            // La longitud mínima para una respuesta es al menos 11 bytes (STX, Sec, Cmd, Sep, EstImpr, Sep, EstFisc, ETX, BCC).
+            const MIN_RESPONSE_LENGTH = 11; 
+            
+            if (respuestaCompleta.length >= MIN_RESPONSE_LENGTH) {
+                const indexETX = respuestaCompleta.lastIndexOf(ETX);
+
+                // 3. Verificación de Terminación de Trama Completa (ETX + 4 caracteres BCC)
+                if (indexETX !== -1 && (respuestaCompleta.length - indexETX) === 5) {
+                    
+                    // La trama está potencialmente completa. Verificamos el BCC.
+                    const cuerpoHastaETX = respuestaCompleta.slice(0, indexETX + 1);
+                    const bccRecibido = respuestaCompleta.slice(indexETX + 1);
+                    const bccCalculado = calcularBCC(cuerpoHastaETX); // Se asume que calcularBCC está disponible.
+
+                    // La verificación de BCC es el paso final para confirmar la integridad.
+                    if (bccRecibido === bccCalculado) {
+                        clearTimeout(timeout);
+                        port.off('data', onData);
+                        resolve(respuestaCompleta);
+                        return;
+                    } else {
+                        // Si el BCC no coincide, no se considera una respuesta válida.
+                        // En este punto, como la longitud es exacta, es un error de transmisión/cálculo.
+                        console.error(`❌ BCC fallido. Recibido: ${bccRecibido}, Calculado: ${bccCalculado}.`);
+                        clearTimeout(timeout);
+                        port.off('data', onData);
+                        reject(new Error("Error de integridad de datos (BCC no coincide)"));
+                        return;
+                    }
+                }
             }
         };
 
+        // Iniciar el timeout
+        timeout = setTimeout(() => {
+            port.off('data', onData);
+            reject(new Error(`Timeout de respuesta (fallo de comunicación) para el comando: ${comando.slice(0, 10)}...`));
+        }, TIMEOUT_MS);
+
         port.on('data', onData);
 
-        // Envía el comando como un buffer de bytes para asegurar la codificación correcta (e.g., $0\times 1C$)
-        port.write(Buffer.from(comando, 'latin1'), (err: any) => {
+        // Envío del comando
+        port.write(Buffer.from(comando, 'latin1'), (err: Error) => {
             if (err) {
                 clearTimeout(timeout);
                 port.off('data', onData);
                 reject(new Error(`Error al escribir en el puerto serial: ${err.message}`));
             }
-            // console.log(`   Comando enviado: ${comando.split('').map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join(' ')}`);
         });
     });
 }
