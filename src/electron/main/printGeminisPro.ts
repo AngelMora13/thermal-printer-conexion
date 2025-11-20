@@ -2,19 +2,21 @@ const SerialPort = require('serialport');
 // Interfaces para la estandarización de datos y configuración
 interface FacturaItem {
     descripcion: string; // Máx. 20 caracteres [cite: 638]
-    cantidad: string;    // Formato nnnn.nnn [cite: 638]
-    montoItem: string;   // Monto del ítem (sin impuesto), formato nnnnnn.nn [cite: 621, 638]
-    tasaImpositiva: string; // Tasa imponible (e.g., .nnnn o '0001' para Percibido) [cite: 638]
+    cantidad: number;    // Formato nnnn.nnn [cite: 638]
+    montoItem: number;   // Monto del ítem (sin impuesto), formato nnnnnn.nn [cite: 621, 638]
+    tasaImpositiva: number; // Tasa imponible (e.g., .nnnn o '0001' para Percibido) [cite: 638]
     calificador: 'M' | 'm'; // 'M' = monto agregado (suma), 'm' = anulación de ítem [cite: 638]
 }
 
 interface DatosCliente {
     razonSocial: string; // Máx. 38 caracteres [cite: 574]
     rif: string;         // Máx. 12 caracteres [cite: 574]
+    igtf?: boolean;     // Indica si se aplica IGTF
+    divisas?: number;  // Monto en divisas si aplica IGTF
 }
 
 // Configuración de la comunicación serial
-const COM_PORT = 'COM4'; // Reemplazar con el puerto serial real
+const COM_PORT = 'COM96'; // Reemplazar con el puerto serial real
 const BAUD_RATE = 9600; // Velocidad de comunicación [cite: 259, 1231]
 const SEPARADOR_CAMPO = '\x1C'; // $0\times 1C$
 const STX = '\x02'; // Inicio de texto $0\times 02$ [cite: 268]
@@ -29,16 +31,9 @@ const DATOS_CLIENTE: DatosCliente = {
 const ITEMS_FACTURA: FacturaItem[] = [
     {
         descripcion: 'Producto A',
-        cantidad: '1.000',
-        montoItem: '1000.00',
-        tasaImpositiva: '0.1600', // Ejemplo: 16% IVA
-        calificador: 'M',
-    },
-    {
-        descripcion: 'Producto B',
-        cantidad: '2.500',
-        montoItem: '50.00',
-        tasaImpositiva: '0.0000', // Ejemplo: Exento
+        cantidad: 210,
+        montoItem: 110,
+        tasaImpositiva: 1600, // Ejemplo: 16% IVA
         calificador: 'M',
     },
 ];
@@ -77,7 +72,7 @@ function calcularBCC(trama: string): string {
  * @param campos Los campos de datos separados por el separador de campo.
  * @returns La trama completa del comando.
  */
-function construirComando(comandoHex: string, campos: string[]): string {
+function construirComando(comandoHex: string, campos: any[]): string {
     const secuenciaChar = String.fromCharCode(SECUENCIA); // Número de secuencia: $0\times 20$ a $0\times 7F$ [cite: 271]
     const comandoChar = String.fromCharCode(parseInt(comandoHex, 16));
     
@@ -145,9 +140,9 @@ async function abortarDocumentoPendiente(port: any): Promise<void> {
     console.warn('\n⚠️ Intentando ABORTAR/CERRAR el documento fiscal pendiente (0x45) debido a un error...');
     
     // Comando 0x45: Cerrar Factura Fiscal
-    const camposCerrar: string[] = [
+    const camposCerrar: any[] = [
         'T', // Calificador 'T' (Terminate/Cerrar). Usamos el cierre normal para liberar la impresora.
-        '0.00' // Monto del pago en Divisa
+        0 // Monto del pago en Divisa
     ];
     const comandoCerrar = construirComando('45', camposCerrar);
 
@@ -173,11 +168,11 @@ async function abortarDocumentoPendiente(port: any): Promise<void> {
  * Función principal para imprimir una Factura Fiscal.
  * @returns Una promesa que resuelve a true si la impresión es exitosa, false en caso contrario.
  */
-async function imprimirFacturaFiscal(): Promise<boolean> {
+async function imprimirFacturaFiscal({portName, cliente, productos}: {portName: string, cliente: DatosCliente, productos: FacturaItem[]}): Promise<boolean> {
     console.log('Iniciando proceso de impresión de factura fiscal...');
     //verificar si es SerialPort.SerialPort o new SerialPort('COM3', { baudRate: 9600 });
     const port = new SerialPort.SerialPort({
-        path: COM_PORT,
+        path: portName,
         baudRate: BAUD_RATE,
         autoOpen: false,
     });
@@ -202,8 +197,8 @@ async function imprimirFacturaFiscal(): Promise<boolean> {
         // --- 1. ABRIR FACTURA FISCAL (0x40) [cite: 559] ---
         console.log('\nComando: Abrir factura fiscal (0x40)');
         const camposAbrir: string[] = [
-            DATOS_CLIENTE.razonSocial, // Campo 1: Razón social [cite: 574]
-            DATOS_CLIENTE.rif,         // Campo 2: RIF [cite: 574]
+            cliente.razonSocial, // Campo 1: Razón social [cite: 574]
+            cliente.rif,         // Campo 2: RIF [cite: 574]
             '7F', // Campo 3: Número de la factura en devolución ('7F' = no utilizado) [cite: 574]
             '7F', // Campo 4: Serial de la máquina fiscal en devolución ('7F' = no utilizado) [cite: 574]
             '7F', // Campo 5: Fecha de la factura en devolución ('7F' = no utilizado) [cite: 574]
@@ -215,13 +210,13 @@ async function imprimirFacturaFiscal(): Promise<boolean> {
         const comandoAbrir = construirComando('40', camposAbrir);
         
         const respuestaAbrir = await enviarComando(port, comandoAbrir);
-        if (verificarError(respuestaAbrir)) return false;
+        if (verificarError(respuestaAbrir)) throw new Error('Error al abrir la factura fiscal.');
         console.log('   Respuesta Abrir FF: ', respuestaAbrir);
 
         // --- 2. IMPRIMIR RENGLONES (0x42) [cite: 609] ---
-        for (const item of ITEMS_FACTURA) {
+        for (const item of productos) {
             console.log(`\nComando: Imprimir Renglón (0x42) - ${item.descripcion}`);
-            const camposItem: string[] = [
+            const camposItem: any[] = [
                 item.descripcion,   // Campo 1: Descripción [cite: 638]
                 item.cantidad,      // Campo 2: Cantidad (nnnn.nnn) [cite: 638]
                 item.montoItem,     // Campo 3: Monto del ítem (nnnnnn.nn) [cite: 638]
@@ -234,20 +229,20 @@ async function imprimirFacturaFiscal(): Promise<boolean> {
             const comandoItem = construirComando('42', camposItem);
             
             const respuestaItem = await enviarComando(port, comandoItem);
-            if (verificarError(respuestaItem)) return false;
+            if (verificarError(respuestaItem)) throw new Error('Error al abrir la factura fiscal.');
             console.log('   Respuesta Item: ', respuestaItem);
         }
 
         // --- 3. CERRAR FACTURA FISCAL (0x45) [cite: 665] ---
         console.log('\nComando: Cerrar factura fiscal (0x45)');
-        const camposCerrar: string[] = [
-            'T', // Campo 1: Calificador 'T' = Cierra e imprime completamente el documento [cite: 687]
-            '0.00' // Campo 2: Monto del pago en Divisa (no utilizado si no se usa IGTF) [cite: 687]
+        const camposCerrar: any[] = [
+            (cliente.igtf ? 'U' :  'T'), // Campo 1: Calificador 'T' = Cierra e imprime completamente el documento [cite: 687]
+            (cliente.igtf ? cliente.divisas : 0), // Campo 2: Monto del pago en Divisa (no utilizado si no se usa IGTF) [cite: 687]
         ];
         const comandoCerrar = construirComando('45', camposCerrar);
 
         const respuestaCerrar = await enviarComando(port, comandoCerrar);
-        if (verificarError(respuestaCerrar)) return false;
+        if (verificarError(respuestaCerrar)) throw new Error('Error al abrir la factura fiscal.');
         console.log('   Respuesta Cerrar FF: ', respuestaCerrar);
         
         console.log('\n✅ Factura Fiscal impresa exitosamente.');
@@ -255,11 +250,15 @@ async function imprimirFacturaFiscal(): Promise<boolean> {
 
     } catch (error) {
         console.error('❌ Error fatal en la comunicación con el equipo fiscal:', error);
-        return false;
-    } finally {
-        port.close();
-        console.log('🔌 Puerto serial cerrado.');
+        await manejarErrorFiscal(port, error);
+    } finally {// El cierre del puerto se mantiene igual que te indiqué anteriormente
+        if (port && port.isOpen) {
+            await new Promise<void>(resolve => port.close(() => resolve()));
+            console.log('🔌 Puerto serial cerrado.');
+        }
     }
+        
+return false;
 }
 
 /**
@@ -348,6 +347,106 @@ function enviarComando(port: any, comando: string): Promise<string> {
             }
         });
     });
+}
+// Dependencias necesarias (asegúrate de tenerlas importadas o disponibles)
+// import { construirComando, enviarComando } from './tu-archivo-principal'; 
+
+/**
+ * ESTRATEGIA 1: Cierre Forzoso por Protocolo
+ * Intenta cerrar cualquier factura fiscal abierta usando el comando 0x45 con calificador 'T'.
+ * Según el manual, 'T' cierra el documento fiscal activo y realiza su impresión completa.
+ * 
+ */
+async function cancelarDocumentoAbierto(port: any): Promise<boolean> {
+    console.warn('⚠️ Intentando cancelar documento fiscal abierto (Comando 0x45, calificador T)...');
+    
+    try {
+        // Comando 0x45: Cerrar Factura Fiscal
+        // Campo 1: 'T' (Terminate/Cerrar documento activo) 
+        // Campo 2: '0.00' (Monto pago, irrelevante en cierre forzoso pero requerido por formato)
+        const campos = ['T', 0];
+        
+        // Asumimos que tienes la función construirComando disponible del código anterior
+        const comandoCancelacion = construirComando('45', campos); 
+        
+        // Enviamos el comando. Nota: Es posible que este comando retorne "ERROR" si no había
+        // documento abierto, pero eso es aceptable en un flujo de recuperación.
+        const respuesta = await enviarComando(port, comandoCancelacion);
+        
+        console.log('✅ Respuesta de cancelación:', respuesta);
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Falló el intento de cancelación por protocolo:', error);
+        return false;
+    }
+}
+
+/**
+ * ESTRATEGIA 2: Reset de Hardware (Reinicio por Software)
+ * Envía la secuencia de control directa para reiniciar el controlador.
+ * Esto libera el equipo si está bloqueado o no responde a comandos normales.
+ * [cite: 322, 323]
+ */
+async function forzarResetHardware(port: any): Promise<void> {
+    console.warn('🚨 Ejecutando RESET DE EMERGENCIA del controlador fiscal...');
+
+    // La secuencia de reset son los bytes del 0x07 al 0x17 consecutivos.
+    // No requiere STX, ETX ni BCC. [cite: 324, 326]
+    const secuenciaReset = Buffer.from([
+        0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 
+        0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 
+        0x15, 0x16, 0x17
+    ]);
+
+    return new Promise((resolve, reject) => {
+        if (!port || !port.isOpen) {
+            console.error('El puerto está cerrado, no se puede enviar Reset.');
+            resolve();
+            return;
+        }
+
+        port.write(secuenciaReset, (err: any) => {
+            if (err) {
+                console.error('Error enviando secuencia de reset:', err);
+                resolve(); // Resolvemos igual para continuar con el cierre del puerto
+            } else {
+                console.log('✅ Secuencia de RESET enviada al buffer.');
+                // Es VITAL esperar unos segundos para que el firmware de la impresora se reinicie
+                console.log('⏳ Esperando 5 segundos para reinicio del equipo...');
+                setTimeout(resolve, 5000); 
+            }
+        });
+    });
+}
+
+/**
+ * FUNCIÓN PRINCIPAL DE RECUPERACIÓN
+ * Ejecuta esta función dentro de tu `catch`.
+ */
+export async function manejarErrorFiscal(port: any, errorOriginal: any) {
+    console.error('\n💥 INICIANDO PROTOCOLO DE RECUPERACIÓN DE ERROR');
+    console.error('Error original:', errorOriginal);
+
+    if (!port || !port.isOpen) {
+        console.log('El puerto ya está cerrado. No se requieren acciones de recuperación.');
+        return;
+    }
+
+    // Paso 1: Intentar cancelar educadamente (Protocolo)
+    const cancelacionExitosa = await cancelarDocumentoAbierto(port);
+
+    // Paso 2: Si la cancelación falló (ej. timeout) o queremos asegurar limpieza, hacemos Reset.
+    // Si la cancelación fue exitosa, el Reset es opcional pero recomendado si el error fue grave.
+    if (!cancelacionExitosa) {
+        console.log('⚠️ La cancelación falló. Escalando a Reset por Software...');
+        await forzarResetHardware(port);
+    } else {
+        console.log('ℹ️ Cancelación enviada. Verificando estado...');
+        // Opcional: Podrías consultar el Status (0x38) aquí para confirmar que está en '00'.
+    }
+    
+    console.log('🏁 Protocolo de recuperación finalizado.');
 }
 
 // Ejemplo de uso (ejecutar la función)

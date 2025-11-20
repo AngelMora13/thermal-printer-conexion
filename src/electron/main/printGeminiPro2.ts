@@ -14,7 +14,7 @@ interface DatosCliente {
 }
 
 // Configuración de la comunicación serial
-const COM_PORT = 'COM4'; // Reemplazar con el puerto serial real
+const COM_PORT = 'COM96'; // Reemplazar con el puerto serial real
 const BAUD_RATE = 9600; // Velocidad de comunicación [cite: 259]
 const SEPARADOR_CAMPO = '\x1C'; // Separador de Campo $0\times 1C$ [cite: 267]
 const STX = '\x02'; // Inicio de texto $0\times 02$ [cite: 268]

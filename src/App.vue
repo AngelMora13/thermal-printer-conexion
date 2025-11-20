@@ -1,343 +1,348 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import HelloWorld from './components/HelloWorld.vue'
-const comPorts = ref<any>([]); // Variable reactiva para guardar la lista
-const selectedComPort = ref(''); // Variable reactiva para la selección del usuario
-// --- Variables para PNP Fiscal (NUEVAS) ---
-const pnpComPorts = ref<any[]>([]); 
-const selectedPnpComPort = ref(''); 
-const facturaData = ref({ // Modelo de datos para la función 4
-    razonSocial: 'CLIENTE DE PRUEBA RIF: J-12345678-0',
-    rif: 'J-12345678-0',
-    direccion: 'DIRECCIÓN DE PRUEBA',
-    pagoDivisaMonto: 100.00, // Monto de pago en divisas para IGTF (si aplica)
-    productos: [
-        { descripcion: 'ITEM 1 (TASA 1)', cantidad: 1.00, precio: 50.00, tasaIva: 1 },
-        { descripcion: 'ITEM 2 (TASA 3)', cantidad: 2.00, precio: 25.00, tasaIva: 3 } // Usar las tasas configuradas en tu impresora
-    ]
-});
-/*********************************************** */
+import { ref, computed, onMounted } from 'vue';
 
-const getComPorts = async () => {
+// Reactive variables for the billing interface
+const printerPorts = ref<any[]>([]);
+const selectedPrinterPort = ref('COM96');
+const invoiceForm = ref({
+    rif: 'V23235235',
+    razonSocial: 'PRUEBA DE FACTURA FISCAL',
+    items: [
+        { nombre: '', cantidad: 1, precioUnitario: 0.00, excento: false },
+    ],
+    igtf: false, // New field for IGTF
+    divisas: 0.00 // New field for divisas
+});
+
+// Computed properties for calculations
+const subtotalItems = computed(() => {
+    return invoiceForm.value.items.reduce((sum, item) => {
+        return sum + item.cantidad * item.precioUnitario;
+    }, 0);
+});
+
+const totalImpuesto = computed(() => {
+    return invoiceForm.value.items.reduce((sum, item) => {
+        if (!item.excento) {
+            return sum + (item.cantidad * item.precioUnitario * 0.16);
+        }
+        return sum;
+    }, 0);
+});
+
+const totalFactura = computed(() => {
+    return subtotalItems.value + totalImpuesto.value;
+});
+
+// Functions to add/remove items
+const addItem = () => {
+    invoiceForm.value.items.push({ nombre: '', cantidad: 1, precioUnitario: 0.00, excento: false });
+};
+
+const addPreFilledItem = () => {
+    const newItemIndex = invoiceForm.value.items.length + 1;
+    invoiceForm.value.items.push({
+        nombre: `Producto [${newItemIndex}]`,
+        cantidad: 1,
+        precioUnitario: 1000.00,
+        excento: false
+    });
+};
+
+const removeItem = (index: number) => {
+    invoiceForm.value.items.splice(index, 1);
+};
+
+// Existing functions, adapted for the new context
+const getPrinterComPorts = async () => {
     try {
         const response = await fetch('http://localhost:8080/listarPuertosCom');
         const ports = await response.json();
-        comPorts.value = ports; // Guarda la lista
+        printerPorts.value = ports;
         console.log('Puertos COM disponibles:', ports);
     } catch (error) {
         console.error('Error fetching COM ports:', error);
     }
 };
-const configurarPuerto = async () => {
-    if (!selectedComPort.value) {
-        console.error("Seleccione un puerto COM antes de configurar.");
-        return;
-    }
-    
-    try {
-        const response = await fetch('http://localhost:8080/configurarPuerto', {
-            method: 'POST',
-            headers: { 
-                'Content-Type': 'application/json' 
-            },
-            body: JSON.stringify({
-                path: selectedComPort.value,
-                // Puedes agregar aquí 'baudRate' si es configurable
-            })
-        });
-        
-        const result = await response.text();
-        console.log(`Configuración de puerto COM exitosa: ${result}`);
-        alert(`Puerto configurado a ${selectedComPort.value}. ¡Listo para imprimir!`);
-        
-    } catch (error) {
-        console.error('Error al configurar el puerto COM:', error);
-        alert('Error al configurar el puerto. Revise la consola del servidor.');
-    }
-}
-const getPrinters = async () => {
-  try {
-    const response = await fetch('http://localhost:8080/listarImpresoras');
-    const printers = await response.json();
-    console.log(printers);
-  } catch (error) {
-    console.error('Error fetching printers:', error);
-  }
-};
-const impresion = async (path: string) => {
-  try {
-    const response = await fetch('http://localhost:8080' + path, { method: 'POST' });
-    const result = await response.text();
-    console.log(result);
-  } catch (error) {
-    console.error('Error during printing:', error);
-  }
-}
-const windowPrint = async () => {
-  const response = await fetch('http://localhost:8080/imprimirPDF', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      html: '<h1>Factura</h1><p>Total: Bs. 100,00</p>'
-    })
-  });
-  const result = await response.text();
-  console.log(result);
-}
-/**************************************** */
-// --- Nuevas Funciones para PNP Fiscal ---
 
-// 1. Listar Puertos COM (PNP)
-const getPnpComPorts = async () => {
-    try {
-        const response = await fetch('http://localhost:8080/pnp/listarPuertos');
-        const ports = await response.json();
-        pnpComPorts.value = ports; 
-        console.log('Puertos COM disponibles PNP:', ports);
-    } catch (error) {
-        console.error('Error fetching COM ports PNP:', error);
-        alert('Error al listar puertos PNP. Revisa la consola y el servidor Electron.');
-    }
-};
+onMounted(() => {
+    getPrinterComPorts();
+});
 
-// 2. Seleccionar/Configurar Puerto COM (PNP)
-const selectPnpComPort = async () => {
-    if (!selectedPnpComPort.value) {
-        console.error("Seleccione un puerto COM antes de configurar para PNP.");
-        return;
-    }
-    
+// Function to handle printing the invoice
+    const handlePrintInvoice = async () => {
+        if (!selectedPrinterPort.value) {
+            alert("Primero debe seleccionar y configurar un puerto COM.");
+            return;
+        }
+
+        if (invoiceForm.value.igtf && invoiceForm.value.divisas <= 0) {
+            alert("Si aplica IGTF, el monto en divisas debe ser mayor a 0.");
+            return;
+        }
+
+    const factura = {
+        portName: selectedPrinterPort.value,
+        cliente: {
+            razonSocial: invoiceForm.value.razonSocial.substring(0, 38), // Max 38 characters
+            rif: invoiceForm.value.rif.substring(0, 12),               // Max 12 characters
+            igtf: invoiceForm.value.igtf,                              // Include IGTF status
+            divisas: Math.round(invoiceForm.value.divisas * 100),      // Include divisas, formatted
+        },
+        productos: invoiceForm.value.items.map(item => ({
+            descripcion: item.nombre.substring(0, 20),                     // Max 20 characters
+            cantidad: Math.round(item.cantidad * 1000),                     // e.g., 2 -> 200, 0.2 -> 20
+            montoItem: Math.round(item.precioUnitario * 100), // Monto sin impuesto, formato igual a cantidad
+            tasaImpositiva: item.excento ? 0 : 1600                        // 0 for excento, 1600 for 16% IVA
+        }))
+    };
+
     try {
-        const response = await fetch('http://localhost:8080/pnp/seleccionarPuerto', {
+        const res = await fetch('http://localhost:8080/print/factura', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                path: selectedPnpComPort.value,
-            })
+            body: JSON.stringify(factura)
         });
-        
-        const result = await response.text();
-        console.log(`Configuración de puerto COM PNP exitosa: ${result}`);
-        alert(`Puerto configurado para PNP a ${selectedPnpComPort.value}. ¡Listo para imprimir!`);
+        alert(await res.text());
     } catch (error) {
-        console.error('Error al configurar puerto PNP:', error);
-        alert('Error al configurar puerto PNP. Revisa la consola y el servidor Electron.');
+        console.error('Error al imprimir factura:', error);
+        alert('Error al imprimir factura. Revise la consola del servidor.');
     }
 };
-
-// 3. Impresión de Prueba (PNP - Documento No Fiscal)
-const doTestPrintPnp = async () => {
-    if (!selectedPnpComPort.value) {
-        alert("Primero debe seleccionar y configurar un puerto COM PNP.");
-        return;
-    }
-
-    try {
-        const response = await fetch('http://localhost:8080/pnp/impresionPrueba', {
-            method: 'POST'
-        });
-        
-        const result = await response.text();
-        console.log('Resultado Impresión de Prueba PNP:', result);
-        alert(result);
-    } catch (error) {
-        console.error('Error en la impresión de prueba PNP:', error);
-        alert('Error al realizar la impresión de prueba PNP. Revisa la consola y el servidor Electron.');
-    }
-};
-
-// 4. Impresión de Factura Completa (PNP - Documento Fiscal)
-const doPrintFacturaPnp = async () => {
-    if (!selectedPnpComPort.value) {
-        alert("Primero debe seleccionar y configurar un puerto COM PNP.");
-        return;
-    }
-    
-    try {
-        const response = await fetch('http://localhost:8080/pnp/imprimirFactura', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(facturaData.value)
-        });
-        
-        const result = await response.text();
-        console.log('Resultado Impresión de Factura PNP:', result);
-        alert(result);
-    } catch (error) {
-        console.error('Error al imprimir factura PNP:', error);
-        alert('Error al imprimir factura PNP. Revisa la consola y el servidor Electron.');
-    }
-};
-/**************************************************************** */
-/***************************** */
-const puertosCustom: any = ref([]);
-const puertoSeleccionadoCustom = ref('');
-
-const listarPuertosCustom = async () => {
-  const res = await fetch('http://localhost:8080/custom/listarPuertos');
-  puertosCustom.value = await res.json();
-};
-
-const configurarPuertoCustom = async () => {
-  if (!puertoSeleccionadoCustom.value) return alert('Seleccione un puerto');
-  const res = await fetch('http://localhost:8080/custom/seleccionarPuerto', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: puertoSeleccionadoCustom.value })
-  });
-  alert(await res.text());
-};
-
-const impresionPruebaCustom = async () => {
-  const res = await fetch('http://localhost:8080/custom/impresionPrueba', { method: 'POST' });
-  alert(await res.text());
-};
-
-const imprimirFacturaCustom = async () => {
-  const factura = {
-    cliente: {
-      razonSocial: 'Juan Pérez C.A.',
-      rif: 'J-12345678-9',
-      direccion: 'Av. Principal, Caracas'
-    },
-    productos: [
-      { descripcion: 'Producto A', precio: '100.00', cantidad: '2', iva: '16' },
-      { descripcion: 'Producto B', precio: '50.00', cantidad: '1', iva: '8' }
-    ]
-  };
-  const res = await fetch('http://localhost:8080/custom/imprimirFactura', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(factura)
-  });
-  alert(await res.text());
-};
-const imprimirFacturaGem = async () => {
-  const factura = {
-    cliente: {
-      razonSocial: 'Juan Pérez C.A.',
-      rif: 'J-12345678-9',
-      direccion: 'Av. Principal, Caracas'
-    },
-    productos: [
-      { descripcion: 'Producto A', precio: '100.00', cantidad: '2', iva: '16' },
-      { descripcion: 'Producto B', precio: '50.00', cantidad: '1', iva: '8' }
-    ]
-  };
-  const res = await fetch('http://localhost:8080/pnp/imprimirFacturaGem', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(factura)
-  });
-  alert(await res.text());
-};
-const imprimirFacturaGem2 = async () => {
-  const factura = {
-    cliente: {
-      razonSocial: 'Juan Pérez C.A.',
-      rif: 'J-12345678-9',
-      direccion: 'Av. Principal, Caracas'
-    },
-    productos: [
-      { descripcion: 'Producto A', precio: '100.00', cantidad: '2', iva: '16' },
-      { descripcion: 'Producto B', precio: '50.00', cantidad: '1', iva: '8' }
-    ]
-  };
-  const res = await fetch('http://localhost:8080/pnp/imprimirFacturaGem2', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(factura)
-  });
-  alert(await res.text());
-};
-/******************************** */
 </script>
 
 <template>
-  <div>
-    <a href="https://vitejs.dev" target="_blank">
-      <img src="/vite.svg" class="logo" alt="Vite logo" />
-    </a>
-    <a href="https://vuejs.org/" target="_blank">
-      <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-    </a>
-  </div>
-  <button @click="getPrinters">Listar Impresoras</button>
-  <button @click="impresion('/impresionEpson')">Impresión Epson</button>
-  <button @click="impresion('/impresionHKA')">Impresión HKA</button>
-  <button @click="impresion('/impresionPNP')">Impresión PNP</button>.
-  <button @click="windowPrint">Impresión PDF</button>
-    <hr>
-    <h2>Configuración Serial/Fiscal</h2>
-    
-    <button @click="getComPorts">Buscar Puertos COM</button>
-    
-    <select v-model="selectedComPort">
-        <option value="" disabled>Seleccione un puerto</option>
-        <option v-for="port in comPorts" :key="port?.path" :value="port?.path">
-            {{ port?.path }} ({{ port?.manufacturer }})
-        </option>
-    </select>
-    
-    <button :disabled="!selectedComPort" @click="configurarPuerto">
-        Configurar Puerto {{ selectedComPort }}
-    </button>
-    
-    <button @click="impresion('/impresionHKA')">Impresión HKA</button>
-    <button @click="impresion('/impresionPNP')">Impresión PNP</button>
-    <hr>
-    
-    <h2>Configuración Serial/Fiscal (PNP) GEM</h2>
-    
-    <button @click="getPnpComPorts">1. Listar Puertos COM (PNP)</button>
-    
-    <select v-model="selectedPnpComPort">
-        <option value="" disabled>Seleccione un puerto PNP</option>
-        <option v-for="port in pnpComPorts" :key="port?.path" :value="port?.path">
-            {{ port?.path }} ({{ port?.manufacturer }})
-        </option>
-    </select>
-    
-    <button :disabled="!selectedPnpComPort" @click="selectPnpComPort">
-        2. Configurar Puerto PNP: **{{ selectedPnpComPort || 'Seleccione' }}**
-    </button>
-    
-    <hr>
-    <h3>Operaciones de Impresión (PNP)</h3>
-    
-    <button :disabled="!selectedPnpComPort" @click="doTestPrintPnp">
-        3. Impresión de Prueba (DNF)
-    </button>
-    
-    <button :disabled="!selectedPnpComPort" @click="doPrintFacturaPnp">
-        4. Imprimir Factura Completa
-    </button>
+<div class="invoice-container">
+    <div class="invoice-header">
+        <h1>Factura</h1>
+    </div>
 
-    <div>
-        <h4>Datos de Factura de Prueba (usados en la Función 4)</h4>
-        <p>Razón Social: <strong>{{ facturaData.razonSocial }}</strong></p>
-        <p>RIF: <strong>{{ facturaData.rif }}</strong></p>
-        <p>Productos: {{ facturaData.productos.length }} ítems (edita la data en App.vue si es necesario)</p>
-        <p>Monto Pago Divisa (para IGTF): {{ facturaData.pagoDivisaMonto }}</p>
-    </div><hr>
-<h2>🧾 Funciones Fiscales Personalizadas cop</h2>
-<button @click="listarPuertosCustom">Listar Puertos COM (Custom)</button>
-<select v-model="puertoSeleccionadoCustom">
-  <option disabled value="">Seleccione un puerto</option>
-  <option v-for="port in puertosCustom" :key="port.path" :value="port.path">
-    {{ port.path }} ({{ port.manufacturer }})
-  </option>
-</select>
-<button @click="configurarPuertoCustom">Configurar Puerto</button>
-<button @click="impresionPruebaCustom">Impresión de Prueba</button>
-<button @click="imprimirFacturaCustom">Imprimir Factura</button>
-<div>
-  <h2>🧾 Funciones Fiscales PNP GEMINI</h2>
-  <button @click="imprimirFacturaGem">Imprimir Factura GEMINI PRO</button>
-  <button @click="imprimirFacturaGem2">Imprimir Factura GEMINI PRO 2</button>
+    <div class="invoice-details">
+        <div class="form-group">
+            <label for="printer-port">Puerto de la impresora:</label>
+            <input type="text" id="printer-port" v-model="selectedPrinterPort" placeholder="Ej: COM1 o /dev/ttyUSB0" />
+            <button class="add-item-btn" @click="getPrinterComPorts">Listar Puertos COM</button>
+            <select v-if="printerPorts.length > 0" v-model="selectedPrinterPort" style="margin-top: 10px;">
+                <option value="" disabled>Seleccione un puerto de la lista</option>
+                <option v-for="port in printerPorts" :key="port?.path" :value="port?.path">
+                    {{ port?.path }} ({{ port?.manufacturer }})
+                </option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="rif">RIF:</label>
+            <input type="text" id="rif" v-model="invoiceForm.rif" placeholder="J-12345678-0" />
+        </div>
+        <div class="form-group">
+            <label for="razonSocial">Razón social:</label>
+            <input type="text" id="razonSocial" v-model="invoiceForm.razonSocial" placeholder="RAZÓN SOCIAL DE EJEMPLO" />
+        </div>
+        <div class="form-group">
+            <label for="igtf">Aplicar IGTF:</label>
+            <input type="checkbox" id="igtf" v-model="invoiceForm.igtf" />
+        </div>
+
+        <div class="form-group" v-if="invoiceForm.igtf">
+            <label for="divisas">Monto en Divisas:</label>
+            <input type="number" id="divisas" v-model.number="invoiceForm.divisas" min="0" step="0.01" />
+        </div>
+    </div>
+
+    <div class="invoice-items">
+        <h2>Items</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Nombre de producto</th>
+                    <th>Cantidad</th>
+                    <th>Precio unitario</th>
+                    <th>Excento</th>
+                    <th>Total producto</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr v-for="(item, index) in invoiceForm.items" :key="index">
+                    <td><input type="text" v-model="item.nombre" /></td>
+                    <td><input type="number" v-model.number="item.cantidad" min="1" /></td>
+                    <td><input type="number" v-model.number="item.precioUnitario" min="0" step="0.01" /></td>
+                    <td><input type="checkbox" v-model="item.excento" /></td>
+                    <td>{{ (item.cantidad * item.precioUnitario).toFixed(2) }}</td>
+                    <td><button class="remove-item-btn" @click="removeItem(index)">X</button></td>
+                </tr>
+            </tbody>
+        </table>
+        <button class="add-item-btn" @click="addItem">Agregar Item</button>
+        <button class="add-item-btn" @click="addPreFilledItem" style="margin-left: 10px;">Agregar Item Pre-llenado</button>
+    </div>
+
+    <div class="invoice-summary">
+        <div>
+            <span>Total productos (antes de impuesto):</span>
+            <span>{{ subtotalItems.toFixed(2) }}</span>
+        </div>
+        <div>
+            <span>Total del impuesto (IVA 16%):</span>
+            <span>{{ totalImpuesto.toFixed(2) }}</span>
+        </div>
+        <div class="total-row">
+            <span>Total Factura:</span>
+            <span>{{ totalFactura.toFixed(2) }}</span>
+        </div>
+    </div>
+
+    <div class="invoice-actions">
+        <button class="print-btn" @click="handlePrintInvoice">Imprimir Factura</button>
+    </div>
 </div>
-
 </template>
+
+<style scoped>
+.invoice-container {
+    max-width: 800px;
+    width: 95%; /* Make it responsive */
+    margin: 40px auto;
+    padding: 20px; /* Reduced padding for smaller screens */
+    border: 1px solid #eee;
+    box-shadow: 0 0 10px rgba(0, 0, 0, .15);
+    font-size: 16px;
+    line-height: 24px;
+    font-family: 'Helvetica Neue', 'Helvetica', Helvetica, Arial, sans-serif;
+    color: #555;
+    background-color: #fff;
+    box-sizing: border-box; /* Include padding and border in the element's total width and height */
+}
+
+.invoice-header, .invoice-details, .invoice-items, .invoice-summary, .invoice-actions {
+    margin-bottom: 20px;
+}
+
+.invoice-header h1 {
+    font-size: 36px;
+    color: #333;
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-sizing: border-box;
+    min-width: 0; /* Allow input to shrink on small screens */
+}
+
+.form-group select {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23000000%22%20d%3D%22M287%2C197.399L146.2%2C56.6C142.3%2C52.7%2C136.2%2C52.7%2C132.3%2C56.6L5.499%2C193.4c-3.9%2C3.9-3.9%2C10.2%2C0%2C14.1s10.2%2C3.9%2C14.1%2C0l126.3-126.3l126.3%2C126.3c3.9%2C3.9%2C10.2%2C3.9%2C14.1%2C0S290.9%2C201.299%2C287%2C197.399z%22%2F%3E%3C%2Fsvg%3E');
+    background-repeat: no-repeat;
+    background-position: right 10px top 50%;
+    background-size: 12px;
+    padding-right: 30px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+    display: block; /* Make table responsive by forcing scroll */
+    overflow-x: auto; /* Enable horizontal scrolling */
+    white-space: nowrap; /* Prevent text wrapping inside table cells */
+}
+
+table th, table td {
+    border: 1px solid #eee;
+    padding: 10px;
+    text-align: left;
+}
+
+table th {
+    background-color: #f2f2f2;
+    font-weight: bold;
+}
+
+.total-row {
+    font-weight: bold;
+}
+
+.add-item-btn, .remove-item-btn, .print-btn {
+    background-color: #007bff;
+    color: white;
+    padding: 10px 15px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    margin-top: 10px;
+}
+
+.add-item-btn:hover, .print-btn:hover {
+    background-color: #0056b3;
+}
+
+.remove-item-btn {
+    background-color: #dc3545;
+    margin-left: 10px;
+}
+
+.remove-item-btn:hover {
+    background-color: #c82333;
+}
+
+.invoice-summary div {
+    display: flex;
+    flex-wrap: wrap; /* Allow items to wrap on smaller screens */
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px dashed #eee;
+}
+
+@media (max-width: 600px) {
+    .invoice-container {
+        margin: 20px auto;
+        padding: 15px;
+    }
+
+    .invoice-header h1 {
+        font-size: 28px;
+    }
+
+    table th, table td {
+        padding: 8px;
+    }
+
+    .form-group {
+        margin-bottom: 10px;
+    }
+
+    .add-item-btn, .remove-item-btn, .print-btn {
+        width: 100%;
+        margin-left: 0;
+        margin-top: 5px;
+    }
+}
+
+.invoice-summary div:last-child {
+    border-bottom: none;
+    font-size: 1.2em;
+    font-weight: bold;
+}
+</style>
 
 <style scoped>
 .logo {

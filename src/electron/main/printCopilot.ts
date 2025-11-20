@@ -2,7 +2,7 @@ const SerialPort = require('serialport');
 const Readline = require('@serialport/parser-readline');
 
 // Configuración del puerto COM3
-const port = new SerialPort('COM3', { baudRate: 9600 });
+const port = new SerialPort('COM96', { baudRate: 9600 });
 const parser = port.pipe(new Readline({ delimiter: '\x03' })); // ETX como delimitador
 
 let secuencia = 0x21;
