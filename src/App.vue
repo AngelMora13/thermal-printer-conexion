@@ -1,9 +1,26 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 
+// Interfaces for document types
+interface Factura {
+    numeroFactura: number; // Número de la factura fiscal
+    serialMaquina: string; // Serial de la máquina fiscal
+    fecha: string;        // Formato String es indiferente el formato, quizas DD/MM/AA
+    hora: string;         // Formato String es indiferente el formato, quizas HH:MM
+}
+
+interface NotaCredito {
+    numeroFactura: string;
+    serialMaquina: string;
+    fecha: string;
+    hora: string;
+}
+
 // Reactive variables for the billing interface
 const printerPorts = ref<any[]>([]);
 const selectedPrinterPort = ref('COM96');
+const documentType = ref<'factura' | 'notaCredito'>('factura'); // Default to factura
+
 const invoiceForm = ref({
     rif: 'V23235235',
     razonSocial: 'PRUEBA DE FACTURA FISCAL',
@@ -11,7 +28,14 @@ const invoiceForm = ref({
         { nombre: '', cantidad: 1, precioUnitario: 0.00, excento: false },
     ],
     igtf: false, // New field for IGTF
-    divisas: 0.00 // New field for divisas
+    divisas: 0.00, // New field for divisas
+    // Credit note fields
+    notaCredito: {
+        numeroFactura: '',
+        serialMaquina: '',
+        fecha: '',
+        hora: ''
+    } as NotaCredito
 });
 
 // Computed properties for calculations
@@ -70,43 +94,91 @@ onMounted(() => {
 });
 
 // Function to handle printing the invoice
-    const handlePrintInvoice = async () => {
-        if (!selectedPrinterPort.value) {
-            alert("Primero debe seleccionar y configurar un puerto COM.");
-            return;
-        }
+const handlePrintInvoice = async () => {
+    if (!selectedPrinterPort.value) {
+        alert("Primero debe seleccionar y configurar un puerto COM.");
+        return;
+    }
 
+    if (documentType.value === 'factura') {
         if (invoiceForm.value.igtf && invoiceForm.value.divisas <= 0) {
             alert("Si aplica IGTF, el monto en divisas debe ser mayor a 0.");
             return;
         }
 
-    const factura = {
-        portName: selectedPrinterPort.value,
-        cliente: {
-            razonSocial: invoiceForm.value.razonSocial.substring(0, 38), // Max 38 characters
-            rif: invoiceForm.value.rif.substring(0, 12),               // Max 12 characters
-            igtf: invoiceForm.value.igtf,                              // Include IGTF status
-            divisas: Math.round(invoiceForm.value.divisas * 100),      // Include divisas, formatted
-        },
-        productos: invoiceForm.value.items.map(item => ({
-            descripcion: item.nombre.substring(0, 20),                     // Max 20 characters
-            cantidad: Math.round(item.cantidad * 1000),                     // e.g., 2 -> 200, 0.2 -> 20
-            montoItem: Math.round(item.precioUnitario * 100), // Monto sin impuesto, formato igual a cantidad
-            tasaImpositiva: item.excento ? 0 : 1600                        // 0 for excento, 1600 for 16% IVA
-        }))
-    };
+        const factura = {
+            portName: selectedPrinterPort.value,
+            cliente: {
+                razonSocial: invoiceForm.value.razonSocial.substring(0, 38), // Max 38 characters
+                rif: invoiceForm.value.rif.substring(0, 12),               // Max 12 characters
+                igtf: invoiceForm.value.igtf,                              // Include IGTF status
+                divisas: Math.round(invoiceForm.value.divisas * 100),      // Include divisas, formatted
+            },
+            productos: invoiceForm.value.items.map(item => ({
+                descripcion: item.nombre.substring(0, 20),                     // Max 20 characters
+                cantidad: Math.round(item.cantidad * 1000),                     // e.g., 2 -> 200, 0.2 -> 20
+                montoItem: Math.round(item.precioUnitario * 100), // Monto sin impuesto, formato igual a cantidad
+                tasaImpositiva: item.excento ? 0 : 1600                        // 0 for excento, 1600 for 16% IVA
+            }))
+        };
 
-    try {
-        const res = await fetch('http://localhost:8080/print/factura', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(factura)
-        });
-        alert(await res.text());
-    } catch (error) {
-        console.error('Error al imprimir factura:', error);
-        alert('Error al imprimir factura. Revise la consola del servidor.');
+        try {
+            const res = await fetch('http://localhost:8080/print/factura', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(factura)
+            });
+            alert(await res.text());
+        } catch (error) {
+            console.error('Error al imprimir factura:', error);
+            alert('Error al imprimir factura. Revise la consola del servidor.');
+        }
+    } else { // documentType.value === 'notaCredito'
+        // Validate credit note fields
+        const nc = invoiceForm.value.notaCredito;
+        if (!nc.numeroFactura || !nc.serialMaquina || !nc.fecha || !nc.hora) {
+            alert("Todos los campos de la nota de crédito son obligatorios.");
+            return;
+        }
+
+        const notaCreditoData = {
+            portName: selectedPrinterPort.value,
+            notaCredito: {
+                numeroFactura: nc.numeroFactura,
+                serialMaquina: nc.serialMaquina,
+                fecha: nc.fecha,
+                hora: nc.hora,
+                // You might need to include items here as well, depending on the credit note API
+                // For now, assuming credit note generation might not need all invoice details
+                // This would be an area to clarify with the user/API spec
+            },
+            // Optionally include client and products if the credit note API requires them
+            cliente: {
+                razonSocial: invoiceForm.value.razonSocial.substring(0, 38),
+                rif: invoiceForm.value.rif.substring(0, 12),
+                igtf: invoiceForm.value.igtf,                              // Include IGTF status
+                divisas: Math.round(invoiceForm.value.divisas * 100),      // Include divisas, formatted
+            },
+            productos: invoiceForm.value.items.map(item => ({
+                descripcion: item.nombre.substring(0, 20),
+                cantidad: Math.round(item.cantidad * 1000),
+                montoItem: Math.round(item.precioUnitario * 100),
+                tasaImpositiva: item.excento ? 0 : 1600
+            }))
+        };
+
+        try {
+            // Assuming a different endpoint for credit notes
+            const res = await fetch('http://localhost:8080/print/factura', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(notaCreditoData)
+            });
+            alert(await res.text());
+        } catch (error) {
+            console.error('Error al generar nota de crédito:', error);
+            alert('Error al generar nota de crédito. Revise la consola del servidor.');
+        }
     }
 };
 </script>
@@ -114,37 +186,81 @@ onMounted(() => {
 <template>
 <div class="invoice-container">
     <div class="invoice-header">
-        <h1>Factura</h1>
+        <h1>{{ documentType === 'factura' ? 'Factura' : 'Nota de Crédito' }}</h1>
     </div>
 
     <div class="invoice-details">
-        <div class="form-group">
-            <label for="printer-port">Puerto de la impresora:</label>
-            <input type="text" id="printer-port" v-model="selectedPrinterPort" placeholder="Ej: COM1 o /dev/ttyUSB0" />
-            <button class="add-item-btn" @click="getPrinterComPorts">Listar Puertos COM</button>
-            <select v-if="printerPorts.length > 0" v-model="selectedPrinterPort" style="margin-top: 10px;">
-                <option value="" disabled>Seleccione un puerto de la lista</option>
-                <option v-for="port in printerPorts" :key="port?.path" :value="port?.path">
-                    {{ port?.path }} ({{ port?.manufacturer }})
-                </option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label for="rif">RIF:</label>
-            <input type="text" id="rif" v-model="invoiceForm.rif" placeholder="J-12345678-0" />
-        </div>
-        <div class="form-group">
-            <label for="razonSocial">Razón social:</label>
-            <input type="text" id="razonSocial" v-model="invoiceForm.razonSocial" placeholder="RAZÓN SOCIAL DE EJEMPLO" />
-        </div>
-        <div class="form-group">
-            <label for="igtf">Aplicar IGTF:</label>
-            <input type="checkbox" id="igtf" v-model="invoiceForm.igtf" />
+        <div class="document-selector-and-port">
+            <div class="printer-port-group">
+                <label for="printer-port">Puerto de la impresora:</label>
+                <div class="printer-port-inputs">
+                    <input type="text" id="printer-port" v-model="selectedPrinterPort" placeholder="Ej: COM1 o /dev/ttyUSB0" />
+                    <button class="add-item-btn" @click="getPrinterComPorts">Listar Puertos COM</button>
+                </div>
+                <select v-if="printerPorts.length > 0" v-model="selectedPrinterPort">
+                    <option value="" disabled>Seleccione un puerto de la lista</option>
+                    <option v-for="port in printerPorts" :key="port?.path" :value="port?.path">
+                        {{ port?.path }} ({{ port?.manufacturer }})
+                    </option>
+                </select>
+            </div>
+            <div class="document-type-group">
+                <label>Tipo de Documento:</label>
+                <div class="document-type-selector">
+                    <label>
+                        <input type="radio" value="factura" v-model="documentType" /> Factura
+                    </label>
+                    <label>
+                        <input type="radio" value="notaCredito" v-model="documentType" /> Nota de Crédito
+                    </label>
+                </div>
+            </div>
         </div>
 
-        <div class="form-group" v-if="invoiceForm.igtf">
-            <label for="divisas">Monto en Divisas:</label>
-            <input type="number" id="divisas" v-model.number="invoiceForm.divisas" min="0" step="0.01" />
+        <!-- Invoice and Credit Note Forms -->
+        <div class="form-row">
+            <div class="form-group">
+                <label for="rif">RIF:</label>
+                <input type="text" id="rif" v-model="invoiceForm.rif" placeholder="J-12345678-0" />
+            </div>
+            <div class="form-group">
+                <label for="razonSocial">Razón social:</label>
+                <input type="text" id="razonSocial" v-model="invoiceForm.razonSocial" placeholder="RAZÓN SOCIAL DE EJEMPLO" />
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="igtf">Aplicar IGTF:</label>
+                <input type="checkbox" id="igtf" v-model="invoiceForm.igtf" />
+            </div>
+            <div class="form-group">
+                <label for="divisas">Monto en Divisas:</label>
+                <input type="number" id="divisas" v-model.number="invoiceForm.divisas" min="0" step="0.01" :disabled="!invoiceForm.igtf" />
+            </div>
+        </div>
+
+        <div v-if="documentType === 'notaCredito'">
+            <h2>Datos de la Nota de Crédito</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="nc-numeroFactura">Número de Factura:</label>
+                    <input type="text" id="nc-numeroFactura" v-model="invoiceForm.notaCredito.numeroFactura" />
+                </div>
+                <div class="form-group">
+                    <label for="nc-serialMaquina">Serial de Máquina:</label>
+                    <input type="text" id="nc-serialMaquina" v-model="invoiceForm.notaCredito.serialMaquina" />
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="nc-fecha">Fecha (AAAAMMDD):</label>
+                    <input type="text" id="nc-fecha" v-model="invoiceForm.notaCredito.fecha" placeholder="Ej: 20231026" />
+                </div>
+                <div class="form-group">
+                    <label for="nc-hora">Hora (HHMMSS):</label>
+                    <input type="text" id="nc-hora" v-model="invoiceForm.notaCredito.hora" placeholder="Ej: 143000" />
+                </div>
+            </div>
         </div>
     </div>
 
@@ -192,7 +308,9 @@ onMounted(() => {
     </div>
 
     <div class="invoice-actions">
-        <button class="print-btn" @click="handlePrintInvoice">Imprimir Factura</button>
+        <button class="print-btn" @click="handlePrintInvoice">
+            {{ documentType === 'factura' ? 'Imprimir Factura' : 'Generar Nota de Crédito' }}
+        </button>
     </div>
 </div>
 </template>
@@ -224,13 +342,61 @@ onMounted(() => {
     margin-bottom: 20px;
 }
 
+.document-selector-and-port {
+    display: flex;
+    flex-wrap: wrap; /* Allow wrapping on smaller screens */
+    gap: 20px; /* Space between the two main sections */
+    margin-bottom: 10px; /* Reduced margin-bottom */
+    align-items: center; /* Vertically align items for single line appearance */
+}
+
+.document-type-group {
+    flex: 1; /* Allow to take available space */
+    min-width: 280px; /* Ensure it doesn't get too small */
+    display: flex; /* Make the group a flex container */
+    flex-direction: column; /* Stack label and radio buttons vertically */
+    align-items: center; /* Align label and radio buttons horizontally */
+    gap: 10px; /* Space between label and radio buttons */
+}
+
+.printer-port-group {
+    flex: 1; /* Allow to take available space */
+    min-width: 280px; /* Ensure it doesn't get too small */
+    display: flex; /* Keep flex for label-inputs-select stacking */
+    flex-direction: column; /* Stack label, inputs, and select vertically */
+    gap: 5px; /* Reduced gap */
+}
+
+.printer-port-inputs {
+    display: flex;
+    gap: 10px; /* Space between input and button */
+    margin-bottom: 5px; /* Reduced margin-bottom */
+}
+
+.printer-port-inputs input {
+    flex: 1; /* Input takes available space */
+}
+
+.form-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin-bottom: 5px; /* Reduced vertical spacing */
+}
+
+.form-row .form-group {
+    flex: 1; /* Each form group takes equal space in a row */
+    min-width: 200px; /* Minimum width for each field before wrapping */
+    margin-bottom: 0; /* Remove bottom margin from form-group if it's inside a form-row */
+}
+
 .form-group {
-    margin-bottom: 15px;
+    margin-bottom: 5px; /* Reduced vertical spacing */
 }
 
 .form-group label {
     display: block;
-    margin-bottom: 5px;
+    margin-bottom: 3px; /* Slightly reduced margin for labels */
     font-weight: bold;
 }
 
@@ -288,7 +454,12 @@ table th {
     border-radius: 4px;
     cursor: pointer;
     font-size: 16px;
-    margin-top: 10px;
+    margin-top: 5px; /* Consistent smaller margin */
+}
+
+/* Specific adjustment for the "Listar Puertos COM" button */
+.printer-port-inputs .add-item-btn {
+    margin-top: 0; /* Align button with the input field */
 }
 
 .add-item-btn:hover, .print-btn:hover {
@@ -335,12 +506,57 @@ table th {
         margin-left: 0;
         margin-top: 5px;
     }
+
+    .document-selector-and-port {
+        flex-direction: column; /* Stack document type and printer port vertically on small screens */
+        gap: 10px; /* Reduced gap */
+    }
+
+    .document-type-group {
+        flex-direction: column; /* Stack label and radio buttons vertically */
+        align-items: flex-start;
+    }
+
+    .printer-port-group {
+        flex-direction: column; /* Stack label, input, and select vertically */
+        align-items: flex-start;
+    }
+
+    .printer-port-inputs {
+        flex-direction: column; /* Stack printer port input and button vertically on small screens */
+        gap: 5px;
+        width: 100%; /* Take full width */
+    }
+
+    .form-row {
+        flex-direction: column; /* Stack form groups vertically on small screens */
+        gap: 10px;
+    }
 }
 
 .invoice-summary div:last-child {
     border-bottom: none;
     font-size: 1.2em;
     font-weight: bold;
+}
+
+/* Specific styles for document type selector radio buttons */
+.document-type-selector {
+    display: flex;
+    gap: 15px;
+    margin-top: 0; /* Remove top margin as it's now flex-aligned within its group */
+}
+
+.document-type-selector label {
+    display: flex;
+    align-items: center;
+    font-weight: normal;
+    margin-bottom: 0;
+}
+
+.document-type-selector input[type="radio"] {
+    width: auto;
+    margin-right: 5px;
 }
 </style>
 

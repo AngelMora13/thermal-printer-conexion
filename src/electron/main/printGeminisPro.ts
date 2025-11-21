@@ -2,10 +2,17 @@ const SerialPort = require('serialport');
 // Interfaces para la estandarización de datos y configuración
 interface FacturaItem {
     descripcion: string; // Máx. 20 caracteres [cite: 638]
-    cantidad: number;    // Formato nnnn.nnn [cite: 638]
-    montoItem: number;   // Monto del ítem (sin impuesto), formato nnnnnn.nn [cite: 621, 638]
-    tasaImpositiva: number; // Tasa imponible (e.g., .nnnn o '0001' para Percibido) [cite: 638]
+    cantidad: any;    // Formato nnnn.nnn [cite: 638]
+    montoItem: any;   // Monto del ítem (sin impuesto), formato nnnnnn.nn [cite: 621, 638]
+    tasaImpositiva: any; // Tasa imponible (e.g., .nnnn o '0001' para Percibido) [cite: 638]
     calificador: 'M' | 'm'; // 'M' = monto agregado (suma), 'm' = anulación de ítem [cite: 638]
+}
+
+interface Factura {
+    numeroFactura: string; // Número de la factura fiscal
+    serialMaquina: string; // Serial de la máquina fiscal
+    fecha: string;        // Formato AAAAMMDD
+    hora: string;         // Formato HHMMSS
 }
 
 interface DatosCliente {
@@ -75,7 +82,6 @@ function calcularBCC(trama: string): string {
 function construirComando(comandoHex: string, campos: any[]): string {
     const secuenciaChar = String.fromCharCode(SECUENCIA); // Número de secuencia: $0\times 20$ a $0\times 7F$ [cite: 271]
     const comandoChar = String.fromCharCode(parseInt(comandoHex, 16));
-    
     // Trama = STX + Sec + Comando + Separador + Campo1 + Separador + ... + ETX
     // Los campos ya deben incluir el separador de campo al final.
     const cuerpoComando = secuenciaChar + comandoChar + SEPARADOR_CAMPO + campos.join(SEPARADOR_CAMPO);
@@ -168,7 +174,7 @@ async function abortarDocumentoPendiente(port: any): Promise<void> {
  * Función principal para imprimir una Factura Fiscal.
  * @returns Una promesa que resuelve a true si la impresión es exitosa, false en caso contrario.
  */
-async function imprimirFacturaFiscal({portName, cliente, productos}: {portName: string, cliente: DatosCliente, productos: FacturaItem[]}): Promise<boolean> {
+async function imprimirFacturaFiscal({portName, cliente, productos, notaCredito}: {portName: string, cliente: DatosCliente, productos: FacturaItem[], notaCredito: Factura}): Promise<boolean> {
     console.log('Iniciando proceso de impresión de factura fiscal...');
     //verificar si es SerialPort.SerialPort o new SerialPort('COM3', { baudRate: 9600 });
     const port = new SerialPort.SerialPort({
@@ -176,6 +182,7 @@ async function imprimirFacturaFiscal({portName, cliente, productos}: {portName: 
         baudRate: BAUD_RATE,
         autoOpen: false,
     });
+    SECUENCIA = 0x20
     
     // Crear el parser para leer las respuestas línea por línea
     // Nota: El protocolo usa STX/ETX como delimitadores, pero para simplificar la lectura de la respuesta
@@ -199,11 +206,11 @@ async function imprimirFacturaFiscal({portName, cliente, productos}: {portName: 
         const camposAbrir: string[] = [
             cliente.razonSocial, // Campo 1: Razón social [cite: 574]
             cliente.rif,         // Campo 2: RIF [cite: 574]
-            '7F', // Campo 3: Número de la factura en devolución ('7F' = no utilizado) [cite: 574]
-            '7F', // Campo 4: Serial de la máquina fiscal en devolución ('7F' = no utilizado) [cite: 574]
-            '7F', // Campo 5: Fecha de la factura en devolución ('7F' = no utilizado) [cite: 574]
-            '7F', // Campo 6: Hora de la factura en devolución ('7F' = no utilizado) [cite: 574]
-            '7E', // Campo 7: Calificador de comando ('7E' = Factura normal - ningún otro caso) [cite: 574]
+            (notaCredito?.numeroFactura || '7F').toString(), // Campo 3: Número de la factura en devolución ('7F' = no utilizado) [cite: 574]
+            (notaCredito?.serialMaquina || '7F').toString(), // Campo 4: Serial de la máquina fiscal en devolución ('7F' = no utilizado) [cite: 574]
+            (notaCredito?.fecha || '7F').toString(), // Campo 5: Fecha de la factura en devolución ('7F' = no utilizado) [cite: 574]
+            (notaCredito?.hora || '7F').toString(), // Campo 6: Hora de la factura en devolución ('7F' = no utilizado) [cite: 574]
+            notaCredito?.numeroFactura ? 'D' : '7E', // Campo 7: Calificador de comando ('7E' = Factura normal - ningún otro caso) [cite: 574]
             '7F', // Campo 8: No utilizado [cite: 574]
             '7F', // Campo 9: No utilizado [cite: 574]
         ];
@@ -275,7 +282,6 @@ function enviarComando(port: any, comando: string): Promise<string> {
         const respuestaChunks: string[] = [];
         const onData = (data: Buffer) => {
             const dataString = data.toString('latin1');
-            console.log({dataString}); // Para depuración
 
             // 1. Manejo del código de continuación (Equipo Procesando)
             if (dataString.includes('\x12')) {
@@ -295,7 +301,6 @@ function enviarComando(port: any, comando: string): Promise<string> {
             // 2. Acumulación de Chunks
             respuestaChunks.push(dataString);
             const respuestaCompleta = respuestaChunks.join('');
-            console.log({dataString, respuestaChunks})
             // La respuesta final siempre es: STX + ... + ETX (1 byte) + BCC (4 bytes).
             // La longitud mínima para una respuesta es al menos 11 bytes (STX, Sec, Cmd, Sep, EstImpr, Sep, EstFisc, ETX, BCC).
             const MIN_RESPONSE_LENGTH = 11; 
